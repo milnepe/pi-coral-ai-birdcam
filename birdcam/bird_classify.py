@@ -1,3 +1,5 @@
+#!/usr/bin/python3
+
 # Copyright 2019 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,8 +14,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
-#!/usr/bin/python3
 
 """
 Coral Smart Bird Feeder
@@ -31,6 +31,7 @@ model.
 import argparse
 import time
 import logging
+import threading
 from PIL import Image
 
 from pycoral.utils.dataset import read_label_file
@@ -79,8 +80,8 @@ def user_selections():
                         help='.tflite model path')
     parser.add_argument('--labels', required=True,
                         help='label file path')
-    parser.add_argument('--videosrc', help='Which video source to use', default='/dev/video0')
-
+    parser.add_argument('--videosrc', help='Which video source to use',
+                        default='/dev/video0')
     parser.add_argument('--top_k', type=int, default=1,
                         help='number of classes with highest score to display')
     parser.add_argument('--threshold', type=float, default=0.4,
@@ -91,6 +92,8 @@ def user_selections():
                         help='Print inference results to terminal')
     parser.add_argument('--training', action='store_true',
                         help='Training mode for image collection')
+    parser.add_argument('--visit_interval', action='store', type=int, default=2,
+                        help='Minimum interval between bird visits')
     args = parser.parse_args()
     return args
 
@@ -98,8 +101,8 @@ def user_selections():
 def main():
     """Creates camera pipeline, and pushes pipeline through ClassificationEngine
     model. Logs results to user-defined storage. Runs either in training mode to
-    gather images for custom model creation or in capture mode that records images
-    of a bird visit if a model label is detected."""
+    gather images for custom model creation or capture mode that records images
+    of bird visits if a model label is detected."""
     args = user_selections()
     print(args)
     print("Loading %s with %s labels." % (args.model, args.labels))
@@ -126,13 +129,25 @@ def main():
     last_results = [('label', 0)]
     visitors = []
 
+    DURATION = args.visit_interval
+    timer = False
+
+    def timed_event():
+        nonlocal timer
+        timer = True
+        threading.Timer(DURATION, timed_event).start()
+
+    timed_event()
+
     def user_callback(image, svg_canvas):
         nonlocal last_time
         nonlocal last_results
         nonlocal visitors
+        nonlocal timer
         start_time = time.monotonic()
         common.set_resized_input(
-            interpreter, image.size, lambda size: image.resize(size, Image.NEAREST))
+            interpreter, image.size,
+            lambda size: image.resize(size, Image.NEAREST))
         interpreter.invoke()
         results = get_classes(interpreter, args.top_k, args.threshold)
         end_time = time.monotonic()
@@ -148,7 +163,14 @@ def main():
             # Custom model mode:
             if len(results):
                 visitor = results[0][0]
-                if visitor != 'background':
+                if visitor not in EXCLUSIONS:
+                    # If visit interval has past, clear visitors list
+                    if timer:
+                        print("next visit...")
+                        visitors.clear()
+                        timer = False
+                    # If this is a new visit, add bird to visitors list
+                    # so we don't keep taking the same image
                     if visitor not in visitors:
                         print("Visitor: ", visitor)
                         save_data(image,  visitor, storage_dir)
@@ -160,4 +182,7 @@ def main():
 
 
 if __name__ == '__main__':
+    # Add to this list for false positives for your camera
+    EXCLUSIONS = ['background',
+                 'Branta canadensis (Canada Goose)']
     main()
